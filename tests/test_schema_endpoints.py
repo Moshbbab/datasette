@@ -333,3 +333,27 @@ async def test_schema_parent_views_hide_denied_tables(
     assert "CREATE TABLE employee_salaries" in response.text
     assert "idx_employee_salaries_ssn" in response.text
     assert "trg_employee_salaries" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "object_name", ["idx_employee_salaries_ssn", "trg_employee_salaries"]
+)
+@pytest.mark.parametrize("format_ext", ["json", "md", ""])
+async def test_table_schema_does_not_serve_objects_of_denied_table(
+    schema_table_perms_ds, object_name, format_ext
+):
+    """
+    Related to GHSA-926p-cw2f-643h: /db/<name>/-/schema looks up sqlite_master
+    by name without restricting to tables/views, so requesting the name of an
+    index or trigger that belongs to a denied table serves its DDL. The
+    view-table check runs against the index/trigger name, which is not a
+    restricted table, so it passes.
+    """
+    url = f"/schema_table_perms_db/{object_name}/-/schema"
+    if format_ext:
+        url += f".{format_ext}"
+    response = await schema_table_perms_ds.client.get(url)
+    assert response.status_code in (403, 404)
+    assert "employee_salaries" not in response.text
+    assert "ssn" not in response.text

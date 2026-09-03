@@ -1418,7 +1418,8 @@ class TableSchemaView(SchemaBaseView):
         # Get schema for the table
         db = self.ds.databases[database_name]
         result = await db.execute(
-            "select sql from sqlite_master where name = ? and sql is not null",
+            "select sql from sqlite_master where name = ? "
+            "and type in ('table', 'view') and sql is not null",
             [table_name],
         )
         row = result.first()
