@@ -821,16 +821,18 @@ class TableCreateView(BaseView):
         ignore = create_request.ignore
         replace = create_request.replace
 
+        table_name = create_request.table
+        table_exists = await db.table_exists(table_name)
+        table_resource = TableResource(database=database_name, table=table_name)
+
         # Replacing rows requires update-row permission
         if replace and not await self.ds.allowed(
             action="update-row",
-            resource=DatabaseResource(database=database_name),
+            resource=table_resource,
             actor=request.actor,
         ):
             return Response.error(["Permission denied: need update-row"], 403)
 
-        table_name = create_request.table
-        table_exists = await db.table_exists(table_name)
         columns = create_request.columns
         rows = create_request.rows_list
 
@@ -838,7 +840,7 @@ class TableCreateView(BaseView):
             # Must have insert-row permission
             if not await self.ds.allowed(
                 action="insert-row",
-                resource=DatabaseResource(database=database_name),
+                resource=table_resource,
                 actor=request.actor,
             ):
                 return Response.error(["Permission denied: need insert-row"], 403)
@@ -857,7 +859,7 @@ class TableCreateView(BaseView):
                 if create_request.alter:
                     if not await self.ds.allowed(
                         action="alter-table",
-                        resource=DatabaseResource(database=database_name),
+                        resource=table_resource,
                         actor=request.actor,
                     ):
                         return Response.error(

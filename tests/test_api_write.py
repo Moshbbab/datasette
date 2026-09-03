@@ -2745,3 +2745,119 @@ async def test_create_using_alter_against_existing_table(
         insert_rows_event = ds_write._tracked_events[1]
         assert insert_rows_event.name == "insert-rows"
         assert insert_rows_event.num_rows == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("denied_action", "request_body"),
+    (
+        (
+            "insert-row",
+            {
+                "table": "salaries",
+                "rows": [{"id": 9, "note": "INJ-VIA-CREATE"}],
+            },
+        ),
+        (
+            "update-row",
+            {
+                "table": "salaries",
+                "rows": [{"id": 1, "note": "REPLACED"}],
+                "pk": "id",
+                "replace": True,
+            },
+        ),
+        (
+            "alter-table",
+            {
+                "table": "salaries",
+                "rows": [{"id": 9, "note": "INSERTED", "extra": "NEW"}],
+                "alter": True,
+            },
+        ),
+    ),
+)
+async def test_create_table_existing_table_respects_table_level_denial(
+    denied_action, request_body
+):
+    # GHSA-53fc-rhfg-h7qp issue 2: POST /db/-/create against an existing table
+    # inserts rows into it, so insert-row (and update-row / alter-table) must be
+    # checked against the TableResource, not just the DatabaseResource.
+    ds = Datasette(
+        memory=True,
+        config={
+            "databases": {
+                # id=editor user has each permission at the database level, but
+                # the selected action is explicitly denied on the salaries table
+                "data": {
+                    "permissions": {
+                        "create-table": {"id": "editor"},
+                        "insert-row": {"id": "editor"},
+                        "update-row": {"id": "editor"},
+                        "alter-table": {"id": "editor"},
+                    },
+                    "tables": {
+                        "salaries": {"permissions": {denied_action: False}},
+                    },
+                }
+            }
+        },
+    )
+    db = ds.add_memory_database(
+        f"create_table_existing_table_denied_{denied_action}", name="data"
+    )
+    await db.execute_write("create table salaries (id integer primary key, note text)")
+    await db.execute_write("insert into salaries values (1, 'TOPSECRET-A')")
+    await ds.invoke_startup()
+
+    if denied_action == "insert-row":
+        # Sanity: direct insert into salaries is denied for this actor
+        direct = await ds.client.post(
+            "/data/salaries/-/insert",
+            actor={"id": "editor"},
+            json={"row": {"id": 9, "note": "INJ-DIRECT"}},
+        )
+        assert direct.status_code == 403
+
+    response = await ds.client.post(
+        "/data/-/create",
+        actor={"id": "editor"},
+        json=request_body,
+    )
+    assert response.status_code == 403, response.json()
+    assert response.json()["errors"] == [f"Permission denied: need {denied_action}"]
+    rows = (await db.execute("select id, note from salaries order by id")).rows
+    assert [tuple(r) for r in rows] == [(1, "TOPSECRET-A")]
+    assert await db.table_columns("salaries") == ["id", "note"]
+
+
+@pytest.mark.asyncio
+async def test_create_table_respects_predeclared_table_level_denial():
+    ds = Datasette(
+        memory=True,
+        config={
+            "databases": {
+                "data": {
+                    "permissions": {
+                        "create-table": {"id": "editor"},
+                        "insert-row": {"id": "editor"},
+                    },
+                    "tables": {
+                        "planned_table": {"permissions": {"insert-row": False}},
+                    },
+                }
+            }
+        },
+    )
+    db = ds.add_memory_database("create_table_predeclared_denial", name="data")
+    await ds.invoke_startup()
+
+    response = await ds.client.post(
+        "/data/-/create",
+        actor={"id": "editor"},
+        json={"table": "planned_table", "rows": [{"id": 1}]},
+    )
+
+    assert response.status_code == 403, response.json()
+    assert response.json()["errors"] == ["Permission denied: need insert-row"]
+    assert not await db.table_exists("planned_table")
