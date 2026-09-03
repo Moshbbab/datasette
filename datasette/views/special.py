@@ -1262,14 +1262,21 @@ class SchemaBaseView(BaseView):
 
     has_json_alternate = False
 
-    async def get_database_schema(self, database_name):
+    async def get_database_schema(self, database_name, actor):
         """Get schema SQL for a database."""
         db = self.ds.databases[database_name]
-        result = await db.execute(
-            "select group_concat(sql, ';' || CHAR(10)) as schema from sqlite_master where sql is not null"
+        allowed_tables_page = await self.ds.allowed_resources(
+            "view-table", actor, parent=database_name
         )
-        row = result.first()
-        return row["schema"] if row and row["schema"] else ""
+        allowed_table_names = {
+            resource.child async for resource in allowed_tables_page.all()
+        }
+        result = await db.execute(
+            "select tbl_name, sql from sqlite_master where sql is not null"
+        )
+        return ";\n".join(
+            row["sql"] for row in result.rows if row["tbl_name"] in allowed_table_names
+        )
 
     def format_json_response(self, data):
         """Format data as JSON response with CORS headers if needed."""
@@ -1331,7 +1338,7 @@ class InstanceSchemaView(SchemaBaseView):
         # Get schema for each database
         schemas = []
         for database_name in allowed_databases:
-            schema = await self.get_database_schema(database_name)
+            schema = await self.get_database_schema(database_name, request.actor)
             schemas.append({"database": database_name, "schema": schema})
 
         if format_ == "json":
@@ -1372,7 +1379,7 @@ class DatabaseSchemaView(SchemaBaseView):
         if database_name not in self.ds.databases:
             return self.format_error_response("Database not found", format_)
 
-        schema = await self.get_database_schema(database_name)
+        schema = await self.get_database_schema(database_name, request.actor)
 
         if format_ == "json":
             return self.format_json_response(
