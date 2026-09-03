@@ -2462,7 +2462,7 @@ class Datasette:
     ):
         data = {"a": actor}
         if expire_after:
-            expires_at = int(time.time()) + (24 * 60 * 60)
+            expires_at = int(time.time()) + expire_after
             data["e"] = baseconv.base62.encode(expires_at)
         response.set_cookie("ds_actor", self.sign(data, "actor"))
 
