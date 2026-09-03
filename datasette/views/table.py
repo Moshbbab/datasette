@@ -1382,7 +1382,9 @@ class TableDropView(BaseView):
                     "database": database_name,
                     "table": table_name,
                     "row_count": (
-                        await db.execute(f"select count(*) from [{table_name}]")
+                        await db.execute(
+                            f"select count(*) from {escape_sqlite(table_name)}"
+                        )
                     ).single_value(),
                     "message": 'Pass "confirm": true to confirm',
                 },
@@ -2432,9 +2434,12 @@ async def _next_value_and_url(
             except IndexError:
                 # sort/sort_desc column missing from SELECT - look up value by PK instead
                 prefix_where_clause = " and ".join(
-                    f"[{pk}] = :pk{i}" for i, pk in enumerate(pks)
+                    f"{escape_sqlite(pk)} = :pk{i}" for i, pk in enumerate(pks)
                 )
-                prefix_lookup_sql = f"select [{sort or sort_desc}] from [{table_name}] where {prefix_where_clause}"
+                prefix_lookup_sql = (
+                    f"select {escape_sqlite(sort or sort_desc)} "
+                    f"from {escape_sqlite(table_name)} where {prefix_where_clause}"
+                )
                 prefix = (
                     await db.execute(
                         prefix_lookup_sql,
