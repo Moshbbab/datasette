@@ -2,7 +2,7 @@ import json
 from typing import ClassVar
 
 from datasette import hookimpl
-from datasette.resources import DatabaseResource
+from datasette.resources import DatabaseResource, TableResource
 from datasette.utils.asgi import BadRequest
 from datasette.views.base import DatasetteError
 
@@ -135,6 +135,11 @@ def through_filters(request, database, table, datasette):
                 through_table = through_data["table"]
                 other_column = through_data["column"]
                 value = through_data["value"]
+                await datasette.ensure_permission(
+                    action="view-table",
+                    resource=TableResource(database=database, table=through_table),
+                    actor=request.actor,
+                )
                 db = datasette.get_database(database)
                 outgoing_foreign_keys = await db.foreign_keys_for_table(through_table)
                 fk_to_us = next(
