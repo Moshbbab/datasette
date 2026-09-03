@@ -311,6 +311,7 @@ class AllowedResourcesView(BaseView):
     has_json_alternate = False
 
     async def get(self, request):
+        await self.ds.ensure_permission(action="view-instance", actor=request.actor)
         await self.ds.refresh_schemas()
 
         # Check if user has permissions-debug (to show sensitive fields)
