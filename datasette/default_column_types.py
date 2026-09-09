@@ -5,6 +5,7 @@ import markupsafe
 
 from datasette import hookimpl
 from datasette.column_types import ColumnType, SQLiteType
+from datasette.utils import is_url
 
 
 class UrlColumnType(ColumnType):
@@ -15,7 +16,10 @@ class UrlColumnType(ColumnType):
     async def render_cell(self, value, column, table, database, datasette, request):
         if not value or not isinstance(value, str):
             return None
-        escaped = markupsafe.escape(value.strip())
+        stripped = value.strip()
+        if not is_url(stripped):
+            return None
+        escaped = markupsafe.escape(stripped)
         return markupsafe.Markup(f'<a href="{escaped}">{escaped}</a>')
 
     async def validate(self, value, datasette):
