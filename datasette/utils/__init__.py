@@ -1744,7 +1744,7 @@ def redact_keys(original: dict, key_patterns: Iterable) -> dict:
             return {
                 k: (
                     redact(v)
-                    if not any(pattern in k for pattern in key_patterns)
+                    if not any(pattern in k.casefold() for pattern in key_patterns)
                     else "***"
                 )
                 for k, v in data.items()
