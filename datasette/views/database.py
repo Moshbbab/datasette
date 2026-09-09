@@ -40,7 +40,11 @@ from datasette.write_sql import QueryWriteRejected
 
 from . import Context
 from .base import DatasetteError, View, stream_csv
-from .query_helpers import _ensure_stored_query_execution_permissions, _table_columns
+from .query_helpers import (
+    _block_framing,
+    _ensure_stored_query_execution_permissions,
+    _table_columns,
+)
 from .table_create_alter import _create_table_ui_context
 from .table_extras import (
     QueryExtraContext,
@@ -1141,6 +1145,8 @@ class QueryView(View):
             assert False, f"Invalid format: {format_}"
         if datasette.cors:
             add_cors_headers(r.headers)
+        if stored_query_write and format_ == "html":
+            _block_framing(r)
         return r
 
 
