@@ -1382,6 +1382,11 @@ view-table
 
 Actor is allowed to view a table (or view) page, e.g. https://latest.datasette.io/fixtures/complex_foreign_keys
 
+FTS vocabulary tables (``fts5vocab`` and ``fts4aux``) also require access to
+their source FTS table and, for an external-content index, its content table.
+The vocabulary table's own permission rules still apply. Vocabulary tables
+whose source cannot be resolved within the same SQLite schema are denied.
+
 ``resource`` - ``datasette.resources.TableResource(database, table)``
     ``database`` is the name of the database (string)
 

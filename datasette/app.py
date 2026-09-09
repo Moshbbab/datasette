@@ -1858,7 +1858,7 @@ allowed AS (
 SELECT {select_columns}
 FROM allowed
 LEFT JOIN derived_permissions AS derived
-  ON allowed.parent = derived.parent AND allowed.child = derived.child
+  ON allowed.parent = derived.parent AND allowed.child = derived.child COLLATE NOCASE
 WHERE COALESCE(derived.source_allowed, 1) = 1
 ORDER BY allowed.parent, allowed.child
 """.strip()
@@ -2128,9 +2128,16 @@ ORDER BY allowed.parent, allowed.child
             and isinstance(resource, TableResource)
             and parent in self.databases
         ):
-            dependency = (
-                await self.databases[parent].derived_table_dependencies()
-            ).get(child)
+            dependency = await self.databases[parent].derived_table_dependencies()
+            dependency = next(
+                (
+                    source
+                    for table, source in dependency.items()
+                    if TableResource.normalize_child(table)
+                    == TableResource.normalize_child(child)
+                ),
+                None,
+            )
             if dependency is not None:
                 stack = _derived_permission_stack.get()
                 dependency_key = (parent, dependency)

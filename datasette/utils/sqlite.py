@@ -15,8 +15,17 @@ if hasattr(sqlite3, "enable_callback_tracebacks"):
 _cached_sqlite_version = None
 _cached_supports_returning = None
 SQLiteTableType = Literal["table", "view", "virtual", "shadow"]
+_SQLITE_IDENTIFIER_RE = (
+    r"""(?:"(?:[^"]|"")*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\]|[^\s.()'"`\[\]]+)"""
+)
 _VIRTUAL_TABLE_MODULE_RE = re.compile(
-    r"\bCREATE\s+VIRTUAL\s+TABLE\b.*?\bUSING\s+([^\s(]+)",
+    r"^\s*CREATE\s+VIRTUAL\s+TABLE\b\s*(?:IF\s+NOT\s+EXISTS\s+)?"
+    + _SQLITE_IDENTIFIER_RE
+    + r"(?:\s*\.\s*"
+    + _SQLITE_IDENTIFIER_RE
+    + r")?\s*\bUSING\b\s*("
+    + _SQLITE_IDENTIFIER_RE
+    + r")",
     re.IGNORECASE | re.DOTALL,
 )
 _VIRTUAL_TABLE_SHADOW_SUFFIXES = {
@@ -153,6 +162,11 @@ def sqlite_derived_table_dependencies(
         return {}
 
     table_names = {row[0] for row in rows}
+    # SQLite identifiers fold ASCII letters only.
+    identifier_case = str.maketrans(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+    )
+    canonical_names = {name.translate(identifier_case): name for name in table_names}
     dependencies = {}
     for virtual_table, sql in rows:
         module = _virtual_table_module(sql)
@@ -172,6 +186,16 @@ def sqlite_derived_table_dependencies(
             content_table = _fts_external_content_table(sql)
             if content_table:
                 dependencies[virtual_table] = content_table
+
+        if module in {"fts5vocab", "fts4aux"}:
+            source = _fts_vocabulary_source(sql, module, schema or "main")
+            source = (
+                canonical_names.get(source.translate(identifier_case))
+                if source
+                else None
+            )
+            # An unresolved source uses the existing cycle guard to deny access.
+            dependencies[virtual_table] = source or virtual_table
 
     return dependencies
 
@@ -242,10 +266,10 @@ def _quote_identifier(value: str) -> str:
 def _virtual_table_module(sql: str | None) -> str | None:
     if not sql:
         return None
-    match = _VIRTUAL_TABLE_MODULE_RE.search(sql)
+    match = _VIRTUAL_TABLE_MODULE_RE.search(_strip_sql_comments(sql))
     if match is None:
         return None
-    return match.group(1).strip("\"'[]`").lower()
+    return _unquote_sql_value(match.group(1)).lower()
 
 
 def _fts_external_content_table(sql: str | None) -> str | None:
@@ -268,6 +292,32 @@ def _fts_external_content_table(sql: str | None) -> str | None:
         if not separator or key.strip().lower() != "content":
             continue
         return _unquote_sql_value(value.strip())
+    return None
+
+
+def _fts_vocabulary_source(sql: str, module: str, schema: str) -> str | None:
+    """Resolve a vocabulary source within the current SQLite schema.
+
+    Cross-schema sources cannot be represented by the dependency map and
+    are conservatively left unresolved.
+    """
+    sql = _strip_sql_comments(sql)
+    match = _VIRTUAL_TABLE_MODULE_RE.search(sql)
+    if match is None:
+        return None
+    start = sql.find("(", match.end())
+    end = sql.rfind(")")
+    if start < 0 or end <= start:
+        return None
+    arguments = [
+        _unquote_sql_value(arg.strip())
+        for arg in _split_sql_arguments(sql[start + 1 : end])
+    ]
+    expected = 2 if module == "fts5vocab" else 1
+    if len(arguments) == expected:
+        return arguments[0]
+    if len(arguments) == expected + 1 and arguments[0].lower() == schema.lower():
+        return arguments[1]
     return None
 
 
