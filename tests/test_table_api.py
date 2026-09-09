@@ -619,7 +619,10 @@ def test_searchmode(table_metadata, querystring, expected_rows):
             ],
         ),
         (
-            "/fixtures/searchable_view.json?_shape=arrays&_search=weasel&_fts_table=searchable_fts&_fts_pk=pk",
+            (
+                "/fixtures/searchable_view_configured_by_metadata.json"
+                "?_shape=arrays&_search=weasel&_fts_table=searchable_fts&_fts_pk=pk"
+            ),
             [[2, "terry dog", "sara weasel", "puma"]],
         ),
     ],

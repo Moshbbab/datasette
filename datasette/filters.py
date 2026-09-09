@@ -51,13 +51,20 @@ def search_filters(request, database, table, datasette):
         human_descriptions = []
         extra_context = {}
 
-        # Figure out which fts_table to use
+        # Figure out which trusted fts_table to use. Query string parameters can
+        # repeat this mapping (for backwards compatibility), but must not select
+        # a different table or primary key.
         table_metadata = await datasette.table_config(database, table)
         db = datasette.get_database(database)
-        fts_table = request.args.get("_fts_table")
-        fts_table = fts_table or table_metadata.get("fts_table")
+        fts_table = table_metadata.get("fts_table")
         fts_table = fts_table or await db.fts_table(table)
-        fts_pk = request.args.get("_fts_pk", table_metadata.get("fts_pk", "rowid"))
+        fts_pk = table_metadata.get("fts_pk", "rowid")
+        requested_fts_table = request.args.get("_fts_table")
+        requested_fts_pk = request.args.get("_fts_pk")
+        if (requested_fts_table and requested_fts_table != fts_table) or (
+            requested_fts_pk and requested_fts_pk != fts_pk
+        ):
+            raise BadRequest("Invalid _fts_table or _fts_pk")
         search_args = {
             key: request.args[key]
             for key in request.args
@@ -75,6 +82,11 @@ def search_filters(request, database, table, datasette):
         extra_context["supports_search"] = bool(fts_table)
 
         if fts_table and search_args:
+            await datasette.ensure_permission(
+                action="view-table",
+                resource=TableResource(database=database, table=fts_table),
+                actor=request.actor,
+            )
             if "_search" in search_args:
                 # Simple ?_search=xxx
                 search = search_args["_search"]
