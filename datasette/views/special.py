@@ -797,6 +797,8 @@ class CreateTokenView(BaseView):
             raise Forbidden(
                 "Token authentication cannot be used to create additional tokens"
             )
+        if "_r" in request.actor:
+            raise Forbidden("Restricted actors cannot create API tokens")
 
     async def shared(self, request):
         self.check_permission(request)

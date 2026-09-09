@@ -1,4 +1,5 @@
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 from bs4 import BeautifulSoup as Soup
@@ -235,6 +236,35 @@ def test_auth_create_token(
         )
         assert response3.status == 200
         assert response3.json["actor"]["id"] == "test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize(
+    "restrictions",
+    [
+        {},
+        {"a": ["vi"]},
+        {"d": {"db": ["vd"]}},
+        {"r": {"db": {"t1": ["vt"]}}},
+    ],
+    ids=["empty", "instance", "database", "table"],
+)
+async def test_auth_create_token_not_allowed_for_restricted_actors(
+    bare_ds, monkeypatch, method, restrictions
+):
+    create_token = AsyncMock()
+    monkeypatch.setattr(bare_ds, "create_token", create_token)
+
+    response = await bare_ds.client.request(
+        method,
+        "/-/create-token",
+        actor={"id": "test", "_r": restrictions},
+    )
+
+    assert response.status_code == 403
+    assert "Restricted actors cannot create API tokens" in response.text
+    create_token.assert_not_called()
 
 
 @pytest.mark.asyncio
