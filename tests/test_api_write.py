@@ -1296,7 +1296,7 @@ async def test_alter_table_foreign_key_without_fk_column_requires_single_pk(ds_w
 
 @pytest.mark.asyncio
 async def test_foreign_key_suggestions(ds_write):
-    token = write_token(ds_write, permissions=["at"])
+    token = write_token(ds_write, permissions=["alter-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
     await db.execute_write("insert into owners (id) values (1), (2), (3)")
@@ -1362,7 +1362,7 @@ async def test_foreign_key_suggestions_permission_denied(ds_write):
 
 @pytest.mark.asyncio
 async def test_foreign_key_suggestions_fail_open(ds_write, monkeypatch):
-    token = write_token(ds_write, permissions=["at"])
+    token = write_token(ds_write, permissions=["alter-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
 
@@ -1393,7 +1393,7 @@ async def test_foreign_key_suggestions_fail_open(ds_write, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_foreign_key_targets(ds_write):
-    token = write_token(ds_write, permissions=["ct"])
+    token = write_token(ds_write, permissions=["create-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
     await db.execute_write("create table categories (slug varchar(30) primary key)")
