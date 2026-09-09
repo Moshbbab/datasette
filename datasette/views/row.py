@@ -482,8 +482,8 @@ class RowView(BaseView):
             for row in display_rows:
                 for cell in row:
                     if cell["column"] in pk_set:
-                        cell["value"] = markupsafe.Markup(
-                            "<strong>{}</strong>".format(cell["value"])
+                        cell["value"] = markupsafe.Markup("<strong>{}</strong>").format(
+                            cell["value"]
                         )
 
             label_column = await db.label_column_for_table(table) if is_table else None
