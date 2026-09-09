@@ -118,6 +118,48 @@ def sqlite_hidden_table_names(conn, *, schema: str | None = "main") -> list[str]
     return sorted(hidden_tables) + content_fts_tables
 
 
+def sqlite_derived_table_dependencies(
+    conn, *, schema: str | None = "main"
+) -> dict[str, str]:
+    """Return implementation table -> logical/content table dependencies.
+
+    ``PRAGMA table_list`` safely identifies virtual and shadow tables, but
+    does not report which virtual table owns a shadow table or which table is
+    named by an FTS ``content=`` option. Derive those relationships from
+    ``sqlite_master`` DDL and the documented shadow-table suffixes.
+    """
+    schema_table = _sqlite_schema_table(schema)
+    try:
+        rows = conn.execute(
+            f"select name, sql from {schema_table} where type = 'table'"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+
+    table_names = {row[0] for row in rows}
+    dependencies = {}
+    for virtual_table, sql in rows:
+        module = _virtual_table_module(sql)
+        if module is None:
+            continue
+
+        # SQLite's documented shadow tables are implementation details of
+        # their logical virtual table.
+        for suffix in _VIRTUAL_TABLE_SHADOW_SUFFIXES.get(module, ()):
+            shadow_table = virtual_table + suffix
+            if shadow_table in table_names:
+                dependencies[shadow_table] = virtual_table
+
+        # An external-content FTS table can expose values fetched from its
+        # content table, so it must also depend on that table's permission.
+        if module in {"fts3", "fts4", "fts5"}:
+            content_table = _fts_external_content_table(sql)
+            if content_table:
+                dependencies[virtual_table] = content_table
+
+    return dependencies
+
+
 def _sqlite_table_type_from_schema(
     conn,
     table: str,
@@ -188,6 +230,121 @@ def _virtual_table_module(sql: str | None) -> str | None:
     if match is None:
         return None
     return match.group(1).strip("\"'[]`").lower()
+
+
+def _fts_external_content_table(sql: str | None) -> str | None:
+    """Extract the external ``content=`` table from an FTS declaration."""
+    if not sql:
+        return None
+    sql = _strip_sql_comments(sql)
+    match = _VIRTUAL_TABLE_MODULE_RE.search(sql)
+    if match is None:
+        return None
+    open_paren = sql.find("(", match.end())
+    if open_paren == -1:
+        return None
+    close_paren = sql.rfind(")")
+    if close_paren <= open_paren:
+        return None
+
+    for argument in _split_sql_arguments(sql[open_paren + 1 : close_paren]):
+        key, separator, value = argument.partition("=")
+        if not separator or key.strip().lower() != "content":
+            continue
+        return _unquote_sql_value(value.strip())
+    return None
+
+
+def _split_sql_arguments(arguments: str) -> list[str]:
+    """Split comma-separated SQLite arguments without splitting quoted text."""
+    parts = []
+    start = 0
+    quote = None
+    closing_quote = None
+    index = 0
+    while index < len(arguments):
+        char = arguments[index]
+        if quote is None:
+            if char in {"'", '"', "`", "["}:
+                quote = char
+                closing_quote = "]" if char == "[" else char
+            elif char == ",":
+                parts.append(arguments[start:index])
+                start = index + 1
+        elif char == closing_quote:
+            # Single/double/backtick quoting escapes the delimiter by
+            # doubling it. Square-bracket identifiers do not.
+            if (
+                quote != "["
+                and index + 1 < len(arguments)
+                and arguments[index + 1] == closing_quote
+            ):
+                index += 1
+            else:
+                quote = None
+                closing_quote = None
+        index += 1
+    parts.append(arguments[start:])
+    return parts
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove SQLite comments while preserving quoted strings/identifiers."""
+    output = []
+    quote = None
+    closing_quote = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        next_char = sql[index + 1] if index + 1 < len(sql) else ""
+        if quote is None:
+            if char in {"'", '"', "`", "["}:
+                quote = char
+                closing_quote = "]" if char == "[" else char
+                output.append(char)
+            elif char == "-" and next_char == "-":
+                index += 2
+                while index < len(sql) and sql[index] not in "\r\n":
+                    index += 1
+                output.append(" ")
+                continue
+            elif char == "/" and next_char == "*":
+                index += 2
+                while index + 1 < len(sql) and sql[index : index + 2] != "*/":
+                    index += 1
+                index = min(index + 2, len(sql))
+                output.append(" ")
+                continue
+            else:
+                output.append(char)
+        else:
+            output.append(char)
+            if char == closing_quote:
+                if (
+                    quote != "["
+                    and index + 1 < len(sql)
+                    and sql[index + 1] == closing_quote
+                ):
+                    output.append(sql[index + 1])
+                    index += 1
+                else:
+                    quote = None
+                    closing_quote = None
+        index += 1
+    return "".join(output)
+
+
+def _unquote_sql_value(value: str) -> str:
+    if len(value) < 2:
+        return value
+    pairs = {"'": "'", '"': '"', "`": "`", "[": "]"}
+    closing = pairs.get(value[0])
+    if closing is None or value[-1] != closing:
+        return value
+    unquoted = value[1:-1]
+    if value[0] != "[":
+        unquoted = unquoted.replace(closing * 2, closing)
+    return unquoted
 
 
 def _is_fts_content_virtual_table(sql: str | None) -> bool:

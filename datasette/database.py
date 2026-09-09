@@ -29,7 +29,7 @@ from .utils import (
     table_columns,
 )
 from .utils.sql_analysis import SQLAnalysis, analyze_sql_tables
-from .utils.sqlite import sqlite_hidden_table_names
+from .utils.sqlite import sqlite_derived_table_dependencies, sqlite_hidden_table_names
 
 connections = threading.local()
 
@@ -85,6 +85,7 @@ class Database:
         self.cached_hash = None
         self.cached_size = None
         self._cached_table_counts = None
+        self._cached_derived_table_dependencies = None
         self._write_thread = None
         self._write_queue = None
         self._closed = False
@@ -767,6 +768,17 @@ class Database:
             ]
 
         return hidden_tables
+
+    async def derived_table_dependencies(self):
+        """Return implementation tables and the tables they derive from."""
+        schema_version = (await self.execute("PRAGMA schema_version")).first()[0]
+        if (
+            self._cached_derived_table_dependencies is None
+            or self._cached_derived_table_dependencies[0] != schema_version
+        ):
+            dependencies = await self.execute_fn(sqlite_derived_table_dependencies)
+            self._cached_derived_table_dependencies = (schema_version, dependencies)
+        return self._cached_derived_table_dependencies[1]
 
     async def view_names(self):
         results = await self.execute("select name from sqlite_master where type='view'")

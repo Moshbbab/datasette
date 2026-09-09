@@ -308,6 +308,12 @@ DEFAULT_NOT_SET = object()
 
 ResourcesSQL = collections.namedtuple("ResourcesSQL", ("sql", "params"))
 
+# Tracks recursive view-table inheritance checks and fails closed if a
+# malicious or malformed schema declares a cycle of FTS content tables.
+_derived_permission_stack = contextvars.ContextVar(
+    "derived_permission_stack", default=()
+)
+
 
 def _permission_cache_key(actor, action, parent, child):
     # Key on the full serialized actor so actors differing in any field
@@ -1746,7 +1752,117 @@ class Datasette:
         sql, params = await build_allowed_resources_sql(
             self, actor, action, parent=parent, include_is_private=include_is_private
         )
+        if action == "view-table":
+            sql, params = await self._apply_derived_table_permissions_to_sql(
+                sql,
+                params,
+                actor=actor,
+                parent=parent,
+                include_is_private=include_is_private,
+            )
         return ResourcesSQL(sql, params)
+
+    async def _apply_derived_table_permissions_to_sql(
+        self,
+        sql,
+        params,
+        *,
+        actor,
+        parent,
+        include_is_private,
+    ):
+        databases = (
+            [(parent, self.databases[parent])]
+            if parent in self.databases
+            else ([] if parent is not None else list(self.databases.items()))
+        )
+        dependency_maps = await asyncio.gather(
+            *(db.derived_table_dependencies() for _, db in databases)
+        )
+        dependencies = [
+            (database_name, child, source)
+            for (database_name, _), dependency_map in zip(databases, dependency_maps)
+            for child, source in dependency_map.items()
+        ]
+        if not dependencies:
+            return sql, params
+
+        sources = sorted(
+            {(database_name, source) for database_name, _, source in dependencies}
+        )
+        actor_verdicts = await asyncio.gather(
+            *(
+                self.allowed(
+                    action="view-table",
+                    resource=TableResource(database_name, source),
+                    actor=actor,
+                )
+                for database_name, source in sources
+            )
+        )
+        actor_allowed = dict(zip(sources, actor_verdicts))
+
+        anonymous_allowed = {}
+        if include_is_private:
+            anonymous_verdicts = await asyncio.gather(
+                *(
+                    self.allowed(
+                        action="view-table",
+                        resource=TableResource(database_name, source),
+                        actor=None,
+                    )
+                    for database_name, source in sources
+                )
+            )
+            anonymous_allowed = dict(zip(sources, anonymous_verdicts))
+
+        wrapped_params = dict(params)
+        derived_rows = [
+            [
+                database_name,
+                child,
+                int(actor_allowed[(database_name, source)]),
+                *(
+                    [int(anonymous_allowed[(database_name, source)])]
+                    if include_is_private
+                    else []
+                ),
+            ]
+            for database_name, child, source in dependencies
+        ]
+        derived_param = "_datasette_derived_permissions"
+        while derived_param in wrapped_params:
+            derived_param += "_"
+        wrapped_params[derived_param] = json.dumps(derived_rows)
+
+        derived_columns = "parent, child, source_allowed"
+        select_columns = "allowed.parent, allowed.child, allowed.reason"
+        if include_is_private:
+            derived_columns += ", source_anonymous_allowed"
+            select_columns += (
+                ", CASE WHEN derived.source_anonymous_allowed = 0 "
+                "THEN 1 ELSE allowed.is_private END AS is_private"
+            )
+        wrapped_sql = f"""
+WITH derived_permissions({derived_columns}) AS (
+  SELECT
+    json_extract(value, '$[0]'),
+    json_extract(value, '$[1]'),
+    json_extract(value, '$[2]')
+    {", json_extract(value, '$[3]')" if include_is_private else ""}
+  FROM json_each(:{derived_param})
+),
+allowed AS (
+{sql}
+)
+SELECT {select_columns}
+FROM allowed
+LEFT JOIN derived_permissions AS derived
+  ON allowed.parent = derived.parent AND allowed.child = derived.child
+WHERE COALESCE(derived.source_allowed, 1) = 1
+ORDER BY allowed.parent, allowed.child
+""".strip()
+        return wrapped_sql, wrapped_params
 
     async def allowed_resources(
         self,
@@ -2002,6 +2118,34 @@ class Datasette:
                 parent=parent,
                 child=child,
             )
+
+        # Automatically derived implementation tables cannot be more visible
+        # than the logical/content table they expose. Keep the requested
+        # table's own permission too: either side can make access private.
+        if (
+            "view-table" in to_check
+            and raw.get("view-table")
+            and isinstance(resource, TableResource)
+            and parent in self.databases
+        ):
+            dependency = (
+                await self.databases[parent].derived_table_dependencies()
+            ).get(child)
+            if dependency is not None:
+                stack = _derived_permission_stack.get()
+                dependency_key = (parent, dependency)
+                if dependency_key in stack or dependency == child:
+                    raw["view-table"] = False
+                else:
+                    token = _derived_permission_stack.set(stack + ((parent, child),))
+                    try:
+                        raw["view-table"] = await self.allowed(
+                            action="view-table",
+                            resource=TableResource(parent, dependency),
+                            actor=actor,
+                        )
+                    finally:
+                        _derived_permission_stack.reset(token)
 
         def resolve(name):
             # final verdict = own rules AND verdict of also_requires chain
