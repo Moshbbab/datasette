@@ -3048,6 +3048,50 @@ class DatasetteRouter:
             receive,
             max_post_body_bytes=self.ds.setting("max_post_body_bytes"),
         )
+        match, view = resolve_routes(self.routes, path)
+        is_static = view is favicon or getattr(view, "_datasette_static", False)
+        original_send = send
+
+        async def send(message):
+            if message["type"] == "http.response.start" and not (
+                is_static and message["status"] in (200, 304)
+            ):
+                # Decide privacy after rendering, including for streaming responses
+                # and error handlers. A public primary resource can still include
+                # private labels, actor navigation, or cookie-dependent content.
+                headers = list(message.get("headers", []))
+                personalized = (
+                    request.actor is not None
+                    or "cookie" in request.headers
+                    or "authorization" in request.headers
+                    or any(key.lower() == b"set-cookie" for key, _ in headers)
+                )
+                if personalized:
+                    headers = [
+                        (key, value)
+                        for key, value in headers
+                        if key.lower() != b"cache-control"
+                    ]
+                    headers.append((b"cache-control", b"private, no-store"))
+
+                # Anonymous responses must not be reused for credentialed requests.
+                # Preserve any additional variation specified by views or plugins.
+                vary = [
+                    part.strip()
+                    for key, value in headers
+                    if key.lower() == b"vary"
+                    for part in value.split(b",")
+                    if part.strip()
+                ]
+                if b"*" not in vary:
+                    for name in (b"Cookie", b"Authorization"):
+                        if name.lower() not in {part.lower() for part in vary}:
+                            vary.append(name)
+                headers = [(k, v) for k, v in headers if k.lower() != b"vary"]
+                headers.append((b"vary", b", ".join(vary)))
+                message = dict(message, headers=headers)
+            await original_send(message)
+
         # Populate request_messages if ds_messages cookie is present
         try:
             request._messages = self.ds.unsign(
@@ -3087,8 +3131,7 @@ class DatasetteRouter:
             return await self.handle_401(request, send, token_error)
         scope_modifications["actor"] = actor or default_actor
         scope = dict(scope, **scope_modifications)
-
-        match, view = resolve_routes(self.routes, path)
+        request.scope = scope
 
         if match is None:
             return await self.handle_404(request, send)
