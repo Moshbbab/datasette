@@ -874,6 +874,11 @@ class CreateTokenView(BaseView):
                 else:
                     errors.append("Invalid expire duration unit")
 
+        if errors:
+            context = await self.shared(request)
+            context["errors"] = errors
+            return await self.render(["create_token.html"], request, context)
+
         # Are there any restrictions?
         from datasette.tokens import TokenRestrictions
 
