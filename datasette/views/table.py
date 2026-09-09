@@ -57,6 +57,7 @@ from datasette.utils.asgi import (
     Request,
     Response,
 )
+from datasette.utils.sqlite import check_structured_write_table
 
 from . import Context, from_extra
 from .base import BaseView, DatasetteError, stream_csv
@@ -1126,6 +1127,7 @@ class TableInsertView(BaseView):
             row_pk_values_for_later = [tuple(row[pk] for pk in pks) for row in rows]
 
         def insert_or_upsert_rows(conn):
+            check_structured_write_table(conn, table_name)
             table = sqlite_utils.Database(conn)[table_name]
             kwargs = {}
             if upsert:

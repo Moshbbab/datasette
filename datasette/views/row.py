@@ -32,6 +32,7 @@ from datasette.utils import (
     to_css_class,
 )
 from datasette.utils.asgi import Forbidden, NotFound, PayloadTooLarge, Response
+from datasette.utils.sqlite import check_structured_write_table
 
 from . import Context, from_extra
 from .base import BaseView, DatasetteError, stream_csv
@@ -786,6 +787,7 @@ class RowDeleteView(BaseView):
 
         # Delete table
         def delete_row(conn):
+            check_structured_write_table(conn, resolved.table)
             sqlite_utils.Database(conn)[resolved.table].delete(resolved.pk_values)
 
         try:
@@ -868,6 +870,7 @@ class RowUpdateView(BaseView):
             return Response.error(["Permission denied for alter-table"], 403)
 
         def update_row(conn):
+            check_structured_write_table(conn, resolved.table)
             sqlite_utils.Database(conn)[resolved.table].update(
                 resolved.pk_values, update, alter=alter
             )

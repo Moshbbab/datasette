@@ -69,6 +69,82 @@ BASE64_WRITE_API_LITERAL = '{"$base64": true, "encoded": "AAEC/f7/"}'
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_fallback", (False, True))
+@pytest.mark.parametrize(
+    "operation", ("insert", "upsert", "update", "delete", "create", "create_uppercase")
+)
+@pytest.mark.parametrize(
+    "module,definition,values,shadow_suffix",
+    (
+        ("fts5", "body", "'original'", "_content"),
+        ("fts4", "body", "'original'", "_content"),
+        ("rtree", "id, minx, maxx", "1, 0, 1", "_rowid"),
+    ),
+)
+@pytest.mark.parametrize("shadow", (False, True))
+async def test_structured_writes_require_ordinary_tables(
+    ds_write,
+    monkeypatch,
+    use_fallback,
+    operation,
+    module,
+    definition,
+    values,
+    shadow_suffix,
+    shadow,
+):
+    if use_fallback:
+        monkeypatch.setattr("datasette.utils.sqlite.supports_table_list", lambda: False)
+    db = ds_write.get_database("data")
+    await db.execute_write(f"create virtual table indexed using {module}({definition})")
+    await db.execute_write(f"insert into indexed values ({values})")
+    table = "indexed" + (shadow_suffix if shadow else "")
+    row = (await db.execute(f"select rowid, * from {escape_sqlite(table)}")).dicts()[0]
+    pks = await db.primary_keys(table)
+    pk_value = row[pks[0] if pks else "rowid"]
+    before = await db.execute_fn(lambda conn: list(conn.iterdump()))
+
+    if operation in ("create", "create_uppercase"):
+        path = "/data/-/create"
+        body = {
+            "table": table.upper() if operation == "create_uppercase" else table,
+            "rows": [row],
+        }
+    elif operation in ("update", "delete"):
+        path = f"/data/{table}/{pk_value}/-/{operation}"
+        body = {"update": row} if operation == "update" else {}
+    else:
+        path = f"/data/{table}/-/{operation}"
+        body = {"rows": [row]}
+    response = await ds_write.client.post(
+        path, json=body, headers=_headers(write_token(ds_write))
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["errors"] == ["Structured writes require an ordinary table"]
+    assert await db.execute_fn(lambda conn: list(conn.iterdump())) == before
+
+
+@pytest.mark.asyncio
+async def test_structured_writes_to_content_table_maintain_fts(ds_write):
+    db = ds_write.get_database("data")
+    await db.execute_write_fn(
+        lambda conn: sqlite_utils.Database(conn)["docs"].enable_fts(
+            ["title"], create_triggers=True
+        )
+    )
+    response = await ds_write.client.post(
+        "/data/docs/-/insert",
+        json={"row": {"id": 1, "title": "ordinary content"}},
+        headers=_headers(write_token(ds_write)),
+    )
+    assert response.status_code == 201, response.text
+    matches = await db.execute(
+        "select rowid from docs_fts where docs_fts match ?", ["ordinary"]
+    )
+    assert [row[0] for row in matches.rows] == [1]
+
+
+@pytest.mark.asyncio
 async def test_base64_write_api_create_table_infers_blob_and_raw_escapes(ds_write):
     token = write_token(ds_write)
     response = await ds_write.client.post(

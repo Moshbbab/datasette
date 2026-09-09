@@ -121,6 +121,24 @@ def sqlite_table_type(
     return _sqlite_table_type_from_schema(conn, table, schema=schema)
 
 
+def check_structured_write_table(conn, table: str, *, allow_missing=False):
+    """Validate a row-write target on the connection that will perform the write."""
+    # SQLite resolves identifiers case-insensitively. The create API must not
+    # treat a differently cased existing name as a missing table.
+    row = conn.execute(
+        "select name from main.sqlite_master where name = ? collate nocase "
+        "and type in ('table', 'view')",
+        (table,),
+    ).fetchone()
+    if row is None and allow_missing:
+        return
+    if row is not None and sqlite_table_type(conn, row[0]) == "table":
+        return
+    # Virtual table modules can interpret row writes as administrative operations.
+    # Their shadow tables are internal storage, not independently writable data.
+    raise ValueError("Structured writes require an ordinary table")
+
+
 def sqlite_hidden_table_names(conn, *, schema: str | None = "main") -> list[str]:
     schema_table = _sqlite_schema_table(schema)
     try:

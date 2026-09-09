@@ -32,7 +32,10 @@ from datasette.utils.permissions import (
     gather_permission_sql_from_hooks,
     resolve_permissions_with_candidates,
 )
-from datasette.utils.sqlite import sqlite_hidden_table_names
+from datasette.utils.sqlite import (
+    check_structured_write_table,
+    sqlite_hidden_table_names,
+)
 
 from .base import BaseView
 
@@ -924,6 +927,7 @@ class TableCreateView(BaseView):
             )
 
         def create_table(conn):
+            check_structured_write_table(conn, table_name, allow_missing=True)
             db_for_write = sqlite_utils.Database(conn)
             table = db_for_write[table_name]
             if rows:
