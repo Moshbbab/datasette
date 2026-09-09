@@ -191,6 +191,18 @@ names and other resource types remain case-sensitive.
 
 The built-in public defaults are global allow rules for actions such as ``view-instance``, ``view-database`` and ``view-table``. They follow the same precedence rules as configuration and plugin rules. The ``--default-deny`` option prevents Datasette from contributing those default allow rules.
 
+The built-in ``datasette.default_permissions.sqlite_statistics`` plugin denies
+``view-table`` for ``sqlite_stat1``, ``sqlite_stat2``, ``sqlite_stat3`` and
+``sqlite_stat4``. These table-level denials also apply to root users and take
+precedence over configuration or plugin allow rules at the same scope.
+This controls table access and listings, without changing ``execute-sql`` or
+SQLite's internal use of statistics.
+
+A plugin can replace this policy by unregistering
+``datasette.default_permissions.sqlite_statistics`` through ``datasette.pm``
+and registering its own permission hook. Plugin registration is process-wide:
+replacing this policy affects every Datasette instance in that process.
+
 Datasette performs checks using :ref:`datasette_allowed`, which accepts keyword arguments for ``action``, ``resource`` and an optional ``actor``.
 
 ``resource`` should be an instance of the appropriate ``Resource`` subclass from :mod:`datasette.resources`—for example ``InstanceResource()``, ``DatabaseResource(database="...``)`` or ``TableResource(database="...", table="...")``. This defaults to ``InstanceResource()`` if not specified.
