@@ -857,7 +857,8 @@ class QueryView(View):
                 raise DatasetteError("?sql= is required", status=400)
 
             async def fetch_data_for_csv(request, _next=None):
-                results = await db.execute(sql, params, truncate=True)
+                # Reuse the trusted magic parameter values prepared above.
+                results = await db.execute(sql, params_for_query, truncate=True)
                 data = {"rows": results.rows, "columns": results.columns}
                 return data, None, None
 
