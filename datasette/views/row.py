@@ -716,9 +716,24 @@ def _truncated_row_flash_label(label):
     return label[: ROW_FLASH_LABEL_MAX_LENGTH - 1] + "\u2026"
 
 
-async def _row_flash_message(db, action, resolved, row=None):
+async def _row_flash_message(
+    datasette, request, action, resolved, row=None, *, refresh_row=False
+):
     pk_label = ", ".join(resolved.pk_values)
-    label_column = await db.label_column_for_table(resolved.table)
+    # Mutation permission does not grant access to stored row labels.
+    if not await datasette.allowed(
+        action="view-table",
+        resource=TableResource(database=resolved.db.name, table=resolved.table),
+        actor=request.actor,
+    ):
+        return f"{action} row {pk_label}"
+
+    if refresh_row and row is None:
+        results = await resolved.db.execute(
+            resolved.sql, resolved.params, truncate=True
+        )
+        row = results.first()
+    label_column = await resolved.db.label_column_for_table(resolved.table)
     label = row_label_from_label_column(row or resolved.row, label_column)
     if label:
         label = _truncated_row_flash_label(label)
@@ -792,7 +807,7 @@ class RowDeleteView(BaseView):
             table_url = self.ds.urls.table(resolved.db.name, resolved.table)
             self.ds.add_message(
                 request,
-                await _row_flash_message(resolved.db, "Deleted", resolved),
+                await _row_flash_message(self.ds, request, "Deleted", resolved),
                 self.ds.INFO,
             )
             return Response.json({"ok": True, "redirect": str(table_url)}, status=200)
@@ -889,16 +904,15 @@ class RowUpdateView(BaseView):
         )
 
         if request.args.get("_message"):
-            message_row = returned_row
-            if message_row is None:
-                results = await resolved.db.execute(
-                    resolved.sql, resolved.params, truncate=True
-                )
-                message_row = results.first()
             self.ds.add_message(
                 request,
                 await _row_flash_message(
-                    resolved.db, "Updated", resolved, row=message_row
+                    self.ds,
+                    request,
+                    "Updated",
+                    resolved,
+                    row=returned_row,
+                    refresh_row=True,
                 ),
                 self.ds.INFO,
             )
