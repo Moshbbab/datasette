@@ -1161,13 +1161,19 @@ class TableInsertView(BaseView):
             if upsert:
                 # Fetch based on initial input IDs
                 where_clause = " OR ".join(
-                    ["({})".format(" AND ".join(f"{pk} = ?" for pk in pks))]
+                    [
+                        "({})".format(
+                            " AND ".join(f"{escape_sqlite(pk)} = ?" for pk in pks)
+                        )
+                    ]
                     * len(row_pk_values_for_later)
                 )
                 args = list(itertools.chain.from_iterable(row_pk_values_for_later))
                 fetched_rows = await db.execute(
-                    "select {}* from [{}] where {}".format(
-                        "rowid, " if pks == ["rowid"] else "", table_name, where_clause
+                    "select {}* from {} where {}".format(
+                        "rowid, " if pks == ["rowid"] else "",
+                        escape_sqlite(table_name),
+                        where_clause,
                     ),
                     args,
                 )
