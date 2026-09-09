@@ -15,6 +15,7 @@ from datasette.database import (
     DatasetteClosedError,
     ExecuteWriteResult,
     MultipleValues,
+    QueryInterrupted,
     Results,
     _deliver_write_result,
 )
@@ -476,6 +477,31 @@ async def test_view_names(db):
         "searchable_view",
         "searchable_view_configured_by_metadata",
     ]
+
+
+@pytest.mark.asyncio
+async def test_execute_write_custom_time_limit():
+    ds = Datasette(settings={"sql_time_limit_ms": 1})
+    db = ds.add_memory_database(uuid.uuid4().hex, name="write_limits")
+    await ds.invoke_startup()
+    # Bounded work from PR #51; even without a limit this finishes on its own.
+    sql = (
+        "with recursive c(x) as "
+        "(select 1 union all select x+1 from c where x < 800000) "
+        "select x from c where x < 0"
+    )
+    try:
+        await db.execute_write("create table items(value integer)")
+        with pytest.raises(QueryInterrupted):
+            await db.execute(sql)
+        # Writes take their own explicit limit, independent of the read setting.
+        with pytest.raises(QueryInterrupted):
+            await db.execute_write(f"insert into items(value) {sql}", time_limit_ms=1)
+        # Interruption must leave the connection available for subsequent writes.
+        await db.execute_write("insert into items(value) values (1)")
+        assert (await db.execute("select value from items")).single_value() == 1
+    finally:
+        ds.close()
 
 
 @pytest.mark.asyncio

@@ -2067,6 +2067,9 @@ Write statements have a default time limit of 2,000ms. Pass a different value
 using ``time_limit_ms=`` or use ``time_limit_ms=None`` to allow the statement to
 run without a time limit.
 
+This write limit is independent of the ``sql_time_limit_ms`` setting used for
+read queries. Changing that setting does not change the default write limit.
+
 .. _database_execute_write_script:
 
 await db.execute_write_script(sql, block=True)
