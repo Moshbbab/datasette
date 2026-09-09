@@ -838,7 +838,14 @@ class RowUpdateView(BaseView):
 
         result = {"ok": True}
         returned_row = None
-        if data.get("return"):
+        # Only read back and disclose the stored row if the actor is also
+        # allowed to view this table - update-row alone must not be usable
+        # to read data the actor cannot otherwise see.
+        if data.get("return") and await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=resolved.db.name, table=resolved.table),
+            actor=request.actor,
+        ):
             results = await resolved.db.execute(
                 resolved.sql, resolved.params, truncate=True
             )

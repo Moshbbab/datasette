@@ -1157,6 +1157,15 @@ class TableInsertView(BaseView):
             # TODO: narrow to expected write errors so Datasette bugs surface as 500s
             return Response.error([str(e)])
         result = {"ok": True}
+        # Only read back and disclose stored rows if the actor is also
+        # allowed to view this table - insert-row/update-row alone must
+        # not be usable to read data the actor cannot otherwise see.
+        if should_return and not await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=database_name, table=table_name),
+            actor=request.actor,
+        ):
+            should_return = False
         if should_return:
             if upsert:
                 # Fetch based on initial input IDs
