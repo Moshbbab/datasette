@@ -158,6 +158,15 @@ Datasette resolves matching rules from most specific to least specific:
 
 This means a resource-level allow can provide an exception to a parent-level deny. It also means that two plugins which disagree at the same level resolve to deny.
 
+For table and view permissions, resource names use SQLite's case-insensitive
+identifier matching: ``Secret``, ``secret`` and ``SECRET`` identify the same
+table. This applies to configuration rules, plugin rules and token restrictions.
+Only ASCII letters are case-insensitive; non-ASCII characters remain distinct.
+Conflicting rules for different spellings of the same name follow the usual
+deny-wins rule at the same scope. Names retain their original spelling in
+resource listings and permission explanations. Database names, stored query
+names and other resource types remain case-sensitive.
+
 .. list-table:: Permission rule examples
    :header-rows: 1
 

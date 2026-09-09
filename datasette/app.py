@@ -321,7 +321,7 @@ def _permission_cache_key(actor, action, parent, child):
     actor_key = (
         json.dumps(actor, sort_keys=True, default=repr) if actor is not None else None
     )
-    return (actor_key, action, parent, child)
+    return (actor_key, action.name, parent, action.normalize_child(child))
 
 
 async def favicon(request, send):
@@ -2103,7 +2103,7 @@ ORDER BY allowed.parent, allowed.child
         to_check = []
         for name in expanded:
             if cache is not None:
-                key = _permission_cache_key(actor, name, parent, child)
+                key = _permission_cache_key(actor, self.actions[name], parent, child)
                 if key in cache:
                     final[name] = cache[key]
                     continue
@@ -2164,7 +2164,9 @@ ORDER BY allowed.parent, allowed.child
         # Cache the freshly computed checks
         if cache is not None:
             for name in to_check:
-                cache[_permission_cache_key(actor, name, parent, child)] = final[name]
+                cache[
+                    _permission_cache_key(actor, self.actions[name], parent, child)
+                ] = final[name]
 
         # Log every check (including cache hits) for the debug page,
         # dependencies before the actions that required them
