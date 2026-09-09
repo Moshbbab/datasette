@@ -83,14 +83,30 @@ def sqlite_table_type(
 ) -> SQLiteTableType | None:
     if supports_table_list():
         try:
-            query = "select type from pragma_table_list where name = ?"
-            params: tuple[str, ...] = (table,)
+            # Use the "PRAGMA table_list" statement form rather than the
+            # pragma_table_list(...) table-valued function. The
+            # table-valued function is resolved like an ordinary relation
+            # name, so an attacker-created table or view literally named
+            # "pragma_table_list" can shadow it and spoof the reported
+            # type (e.g. claiming a virtual table is an ordinary table).
+            # The PRAGMA statement form is a distinct piece of SQL syntax
+            # that always invokes SQLite's built-in pragma, so it cannot
+            # be shadowed by a user-created relation.
             if schema is not None:
-                query += " and schema = ?"
-                params = (table, schema)
-            row = conn.execute(query, params).fetchone()
-            if row is not None and row[0] in {"table", "view", "virtual", "shadow"}:
-                return row[0]
+                query = f"PRAGMA {_quote_identifier(schema)}.table_list"
+            else:
+                query = "PRAGMA table_list"
+            cursor = conn.execute(query)
+            columns = [description[0] for description in cursor.description]
+            for row in cursor.fetchall():
+                record = dict(zip(columns, row))
+                if record.get("name") != table:
+                    continue
+                if schema is not None and record.get("schema") != schema:
+                    continue
+                row_type = record.get("type")
+                if row_type in {"table", "view", "virtual", "shadow"}:
+                    return row_type
         except sqlite3.DatabaseError:
             pass
     return _sqlite_table_type_from_schema(conn, table, schema=schema)
