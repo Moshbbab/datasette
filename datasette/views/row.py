@@ -578,7 +578,7 @@ class RowView(BaseView):
                 "private": private,
                 "columns": reordered_columns,
                 "foreign_key_tables": await self.foreign_key_tables(
-                    database, table, pk_values
+                    database, table, pk_values, actor=request.actor
                 ),
                 "database_color": db.color,
                 "display_columns": display_columns,
@@ -655,12 +655,23 @@ class RowView(BaseView):
             ),
         )
 
-    async def foreign_key_tables(self, database, table, pk_values):
+    async def foreign_key_tables(self, database, table, pk_values, *, actor):
         if len(pk_values) != 1:
             return []
         db = self.ds.databases[database]
         all_foreign_keys = await db.get_all_foreign_keys()
-        foreign_keys = all_foreign_keys[table]["incoming"]
+        foreign_keys = []
+        table_permissions = {}
+        for fk in all_foreign_keys[table]["incoming"]:
+            other_table = fk["other_table"]
+            if other_table not in table_permissions:
+                table_permissions[other_table] = await self.ds.allowed(
+                    action="view-table",
+                    resource=TableResource(database=database, table=other_table),
+                    actor=actor,
+                )
+            if table_permissions[other_table]:
+                foreign_keys.append(fk)
         if len(foreign_keys) == 0:
             return []
 
