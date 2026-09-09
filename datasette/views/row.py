@@ -28,6 +28,7 @@ from datasette.utils import (
     path_with_format,
     path_with_removed_args,
     sqlite3,
+    tilde_decode,
     to_css_class,
 )
 from datasette.utils.asgi import Forbidden, NotFound, PayloadTooLarge, Response
@@ -135,6 +136,12 @@ class RowContext(Context):
     alternate_url_json: str = field(
         metadata={"help": "URL for the JSON version of this page"}
     )
+
+
+async def _database_and_table_resource_from_request(datasette, request):
+    db = await datasette.resolve_database(request)
+    table = tilde_decode(request.url_vars["table"])
+    return db, table, TableResource(database=db.name, table=table)
 
 
 class RowView(BaseView):
@@ -399,17 +406,17 @@ class RowView(BaseView):
         return response
 
     async def data(self, request, default_labels=False):
-        resolved = await self.ds.resolve_row(request)
-        db = resolved.db
+        db, table, resource = await _database_and_table_resource_from_request(
+            self.ds, request
+        )
         database = db.name
-        table = resolved.table
-        pk_values = resolved.pk_values
 
-        # Ensure user has permission to view this row
+        # Check the URL resource before resolving the row, so a denied request
+        # cannot distinguish an existing primary key from a missing one.
         visible, private = await self.ds.check_visibility(
             request.actor,
             action="view-table",
-            resource=TableResource(database=database, table=table),
+            resource=resource,
         )
         if not visible:
             raise Forbidden("You do not have permission to view this table")
@@ -418,6 +425,8 @@ class RowView(BaseView):
         # headers, regardless of which output format ends up being rendered.
         request._datasette_private_response = private
 
+        resolved = await self.ds.resolve_row(request)
+        pk_values = resolved.pk_values
         results = await resolved.db.execute(
             resolved.sql, resolved.params, truncate=True
         )
@@ -722,21 +731,27 @@ async def _resolve_row_and_check_permission(datasette, request, permission):
     from datasette.app import DatabaseNotFound, RowNotFound, TableNotFound
 
     try:
-        resolved = await datasette.resolve_row(request)
+        _, _, resource = await _database_and_table_resource_from_request(
+            datasette, request
+        )
     except DatabaseNotFound as e:
         return False, Response.error([f"Database not found: {e.database_name}"], 404)
+
+    # Check the URL resource before resolving the row, so a denied request
+    # cannot distinguish an existing primary key from a missing one.
+    if not await datasette.allowed(
+        action=permission,
+        resource=resource,
+        actor=request.actor,
+    ):
+        return False, Response.error(["Permission denied"], 403)
+
+    try:
+        resolved = await datasette.resolve_row(request)
     except TableNotFound as e:
         return False, Response.error([f"Table not found: {e.table}"], 404)
     except RowNotFound as e:
         return False, Response.error([f"Record not found: {e.pk_values}"], 404)
-
-    # Ensure user has permission to delete this row
-    if not await datasette.allowed(
-        action=permission,
-        resource=TableResource(database=resolved.db.name, table=resolved.table),
-        actor=request.actor,
-    ):
-        return False, Response.error(["Permission denied"], 403)
 
     return True, resolved
 
