@@ -263,7 +263,7 @@ class RowView(BaseView):
         if ttl is None or not ttl.isdigit():
             ttl = self.ds.setting("default_cache_ttl")
 
-        return self.set_response_headers(response, ttl)
+        return self.set_response_headers(response, ttl, request)
 
     async def html(self, request, data, extra_template_data, templates):
         extras = {}
@@ -376,15 +376,23 @@ class RowView(BaseView):
             },
         )
 
-    def set_response_headers(self, response, ttl):
+    def set_response_headers(self, response, ttl, request=None):
+        private = getattr(request, "_datasette_private_response", False)
         # Set far-future cache expiry
         if self.ds.cache_headers and response.status == 200:
-            ttl = int(ttl)
-            if ttl == 0:
-                ttl_header = "no-cache"
+            if private:
+                # This response is only visible to the current actor (denied
+                # to anonymous requests), so it must never be stored by a
+                # shared cache/CDN - and ?_ttl= must not override that.
+                response.headers["Cache-Control"] = "private, no-store"
+                response.headers["Vary"] = "Cookie"
             else:
-                ttl_header = f"max-age={ttl}"
-            response.headers["Cache-Control"] = ttl_header
+                ttl = int(ttl)
+                if ttl == 0:
+                    ttl_header = "no-cache"
+                else:
+                    ttl_header = f"max-age={ttl}"
+                response.headers["Cache-Control"] = ttl_header
         response.headers["Referrer-Policy"] = "no-referrer"
         if self.ds.cors:
             add_cors_headers(response.headers)
@@ -405,6 +413,10 @@ class RowView(BaseView):
         )
         if not visible:
             raise Forbidden("You do not have permission to view this table")
+        # Record whether this response is private (visible to this actor
+        # only) so set_response_headers() can set appropriate Cache-Control
+        # headers, regardless of which output format ends up being rendered.
+        request._datasette_private_response = private
 
         results = await resolved.db.execute(
             resolved.sql, resolved.params, truncate=True

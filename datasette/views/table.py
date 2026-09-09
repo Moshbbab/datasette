@@ -1712,13 +1712,22 @@ async def table_view(datasette, request):
     if ttl is None or not ttl.isdigit():
         ttl = datasette.setting("default_cache_ttl")
 
+    private = getattr(request, "_datasette_private_response", False)
+
     if datasette.cache_headers and response.status == 200:
-        ttl = int(ttl)
-        if ttl == 0:
-            ttl_header = "no-cache"
+        if private:
+            # This response is only visible to the current actor (denied to
+            # anonymous requests), so it must never be stored by a shared
+            # cache/CDN - and ?_ttl= must not be able to override that.
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Cookie"
         else:
-            ttl_header = f"max-age={ttl}"
-        response.headers["Cache-Control"] = ttl_header
+            ttl = int(ttl)
+            if ttl == 0:
+                ttl_header = "no-cache"
+            else:
+                ttl_header = f"max-age={ttl}"
+            response.headers["Cache-Control"] = ttl_header
 
     # Referrer policy
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -1966,6 +1975,10 @@ async def table_view_data(
     )
     if not visible:
         raise Forbidden("You do not have permission to view this table")
+    # Record whether this response is private (visible to this actor only)
+    # so the outer table_view() can set appropriate Cache-Control headers,
+    # regardless of which output format ends up being rendered.
+    request._datasette_private_response = private
 
     # Redirect based on request.args, if necessary
     redirect_response = await _redirect_if_needed(datasette, request, resolved)
