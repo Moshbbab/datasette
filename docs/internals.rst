@@ -2023,8 +2023,8 @@ Example usage:
 
 .. _database_execute_write:
 
-await db.execute_write(sql, params=None, block=True, request=None, return_all=False, returning_limit=10, transaction=True)
---------------------------------------------------------------------------------------------------------------------------
+await db.execute_write(sql, params=None, block=True, request=None, return_all=False, returning_limit=10, transaction=True, time_limit_ms=2000)
+----------------------------------------------------------------------------------------------------------------------------------------------
 
 SQLite only allows one database connection to write at a time. Datasette handles this for you by maintaining a queue of writes to be executed against a given database. Plugins can submit write operations to this queue and they will be executed in the order in which they are received.
 
@@ -2062,6 +2062,10 @@ If you pass ``block=False`` this behavior changes to "fire and forget" - queries
 Each call to ``execute_write()`` will be executed inside a transaction. Pass
 ``transaction=False`` for statements such as ``VACUUM`` that cannot run inside
 a transaction.
+
+Write statements have a default time limit of 2,000ms. Pass a different value
+using ``time_limit_ms=`` or use ``time_limit_ms=None`` to allow the statement to
+run without a time limit.
 
 .. _database_execute_write_script:
 

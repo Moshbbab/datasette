@@ -247,16 +247,28 @@ class Database:
         return_all=False,
         returning_limit=EXECUTE_WRITE_RETURNING_LIMIT,
         transaction=True,
+        time_limit_ms=2000,
     ):
         self._check_not_closed()
         if returning_limit < 0:
             raise ValueError("returning_limit must be >= 0")
 
-        def _inner(conn):
+        def execute_sql(conn):
             cursor = conn.execute(sql, params or [])
             return ExecuteWriteResult.from_cursor(
                 cursor, return_all=return_all, returning_limit=returning_limit
             )
+
+        def _inner(conn):
+            try:
+                if time_limit_ms is None:
+                    return execute_sql(conn)
+                with sqlite_timelimit(conn, time_limit_ms):
+                    return execute_sql(conn)
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                if e.args == ("interrupted",):
+                    raise QueryInterrupted(e, sql, params)
+                raise
 
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_write_fn(
