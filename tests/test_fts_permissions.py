@@ -1,7 +1,121 @@
 import pytest
 
+from datasette import hookimpl
 from datasette.app import Datasette
+from datasette.permissions import Action, PermissionSQL, _permission_check_cache
 from datasette.resources import DatabaseResource, TableResource
+from datasette.utils.sqlite import sqlite3, sqlite_derived_table_dependencies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fts_module", ["fts4", "fts5"])
+@pytest.mark.parametrize("actor", [None, {"id": "root"}], ids=["anonymous", "root"])
+async def test_derived_permissions_allow_one_hop_but_deny_nested_sources(
+    fts_module, actor
+):
+    class InspectPlugin:
+        @hookimpl
+        def register_actions(self):
+            return [
+                Action(
+                    name="inspect-derived",
+                    description="Inspect a table",
+                    resource_class=TableResource,
+                    also_requires="view-table",
+                )
+            ]
+
+        @hookimpl
+        def permission_resources_sql(self, action):
+            if action == "inspect-derived":
+                return PermissionSQL(
+                    sql="SELECT NULL AS parent, NULL AS child, 1 AS allow, 'inspect allowed' AS reason"
+                )
+
+    ds = Datasette(memory=True)
+    ds.pm.register(InspectPlugin(), name="inspect-derived-test")
+    db = ds.add_memory_database(
+        f"derived_one_hop_{fts_module}_{actor is not None}", name="data"
+    )
+    await db.execute_write("create table Documents (body text)")
+    await db.execute_write(
+        f"create virtual table Search using {fts_module}(body, content='Documents')"
+    )
+    await db.execute_write(
+        f"create virtual table Nested using {fts_module}(body, content='sEaRcH')"
+    )
+    await ds.invoke_startup()
+    token = _permission_check_cache.set({})
+    try:
+        # Both direct permissions are allowed, but a derived source makes its
+        # dependent unavailable even to an actor who can view the whole chain.
+        # Check and cache Search first so its cached grant cannot grant Nested.
+        for table, expected in (
+            ("Documents", True),
+            ("Search", True),
+            ("Nested", False),
+            ("Search_docsize", False),
+        ):
+            for spelling in (table, table.upper(), table.lower()):
+                assert await ds.allowed_many(
+                    actions=["view-table", "inspect-derived"],
+                    resource=TableResource("data", spelling),
+                    actor=actor,
+                ) == {"view-table": expected, "inspect-derived": expected}
+
+        page = await ds.allowed_resources(
+            "view-table", actor, parent="data", include_is_private=True, limit=1000
+        )
+        allowed = {resource.child for resource in page.resources}
+        assert {"Documents", "Search"}.issubset(allowed)
+        assert "Nested" not in allowed
+        assert "Search_docsize" not in allowed
+    finally:
+        _permission_check_cache.reset(token)
+        ds.pm.unregister(name="inspect-derived-test")
+        ds.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listing", [False, True], ids=["individual", "listing"])
+async def test_derived_permission_discovery_error_is_retried(monkeypatch, listing):
+    ds = Datasette(memory=True)
+    db = ds.add_memory_database(f"derived_discovery_error_{listing}", name="data")
+    await db.execute_write("create table documents (id integer primary key)")
+    await ds.invoke_startup()
+
+    class UnavailableSchema:
+        def execute(self, sql):
+            raise sqlite3.DatabaseError("schema temporarily unavailable")
+
+    async def check():
+        if listing:
+            return await ds.allowed_resources("view-table", parent="data")
+        return await ds.allowed(
+            action="view-table", resource=TableResource("data", "documents")
+        )
+
+    token = _permission_check_cache.set({})
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "datasette.database.sqlite_derived_table_dependencies",
+                lambda conn: sqlite_derived_table_dependencies(UnavailableSchema()),
+            )
+            with pytest.raises(sqlite3.DatabaseError, match="schema temporarily"):
+                await check()
+
+        # Failed discovery must not cache an empty map or a permission grant.
+        assert db._cached_derived_table_dependencies is None
+        assert not _permission_check_cache.get()
+        result = await check()
+        if listing:
+            assert [resource.child for resource in result.resources] == ["documents"]
+        else:
+            assert result is True
+        assert db._cached_derived_table_dependencies is not None
+    finally:
+        _permission_check_cache.reset(token)
 
 
 @pytest.mark.asyncio
@@ -243,8 +357,11 @@ async def test_derived_tables_propagate_private_flag_and_route_permissions():
             resource.child: resource for resource in actor_page.resources
         }
         derived_names = set(await db.derived_table_dependencies())
-        assert derived_names.issubset(actor_resources)
-        assert all(actor_resources[name].private for name in derived_names)
+        assert "secret_fts" in actor_resources
+        assert actor_resources["secret_fts"].private
+        # Shadow tables depend on the already-derived external-content FTS
+        # table, so they remain unavailable even to the permitted reader.
+        assert not (derived_names - {"secret_fts"}).intersection(actor_resources)
 
         anonymous_page = await ds.allowed_resources(
             "view-table", parent="data", limit=1000

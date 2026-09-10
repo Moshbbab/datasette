@@ -35,17 +35,20 @@ def test_vocabulary_dependency_identity(module, arguments, vocab_name):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("module", ["fts5", "fts4"])
+@pytest.mark.parametrize("external_content", [False, True], ids=["one-hop", "two-hop"])
 @pytest.mark.parametrize(
     "source_allowed,vocab_allowed", [(False, True), (True, False), (True, True)]
 )
-async def test_vocabulary_transitive_permissions(module, source_allowed, vocab_allowed):
+async def test_vocabulary_immediate_source_permissions(
+    module, external_content, source_allowed, vocab_allowed
+):
     ds = Datasette(
         memory=True,
         config={
             "databases": {
                 "data": {
                     "tables": {
-                        "documents": {
+                        "search": {
                             "permissions": {
                                 "view-table": (
                                     {"id": "reader"} if source_allowed else False
@@ -60,9 +63,8 @@ async def test_vocabulary_transitive_permissions(module, source_allowed, vocab_a
     )
     db = ds.add_memory_database(uuid.uuid4().hex, name="data")
     await db.execute_write("create table documents(body text)")
-    await db.execute_write(
-        f"create virtual table search using {module}(body, content='documents')"
-    )
+    options = "body, content='documents'" if external_content else "body"
+    await db.execute_write(f"create virtual table search using {module}({options})")
     definition = (
         "fts5vocab('SEARCH', 'row')" if module == "fts5" else "fts4aux('SEARCH')"
     )
@@ -70,7 +72,7 @@ async def test_vocabulary_transitive_permissions(module, source_allowed, vocab_a
     await ds.invoke_startup()
     try:
         actor = {"id": "reader"}
-        expected = source_allowed and vocab_allowed
+        expected = source_allowed and vocab_allowed and not external_content
         for name in ("words", "WORDS"):
             assert (
                 await ds.allowed(
@@ -112,7 +114,7 @@ def test_cross_schema_vocabulary_is_unresolved(module, definition):
         conn.execute(f"create virtual table search using {module}(body)")
         conn.execute(f"create virtual table temp.words using {definition}")
         # Cross-schema ownership is not representable by the current map.
-        # The self-dependency invokes the permission layer's cycle denial.
+        # The source is itself derived, so the immediate-source policy denies it.
         assert (
             sqlite_derived_table_dependencies(conn, schema="temp")["words"] == "words"
         )

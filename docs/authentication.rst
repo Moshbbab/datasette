@@ -1382,10 +1382,11 @@ view-table
 
 Actor is allowed to view a table (or view) page, e.g. https://latest.datasette.io/fixtures/complex_foreign_keys
 
-FTS vocabulary tables (``fts5vocab`` and ``fts4aux``) also require access to
-their source FTS table and, for an external-content index, its content table.
-The vocabulary table's own permission rules still apply. Vocabulary tables
-whose source cannot be resolved within the same SQLite schema are denied.
+Derived implementation tables require access to their immediate source: FTS and RTree shadow tables require access to their virtual table, external-content FTS tables require access to their content table, and FTS vocabulary tables (``fts5vocab`` and ``fts4aux``) require access to their FTS table. The derived table's own permission rules also apply.
+
+Access is always denied if the source table is itself derived, or if a vocabulary table's source cannot be identified.
+
+The same rules apply to individual permission checks and table listings, including whether they are private. If a database error prevents dependency discovery, the check or listing fails with an error instead of ignoring the dependencies. Failed discovery results are not cached, so later checks can retry.
 
 ``resource`` - ``datasette.resources.TableResource(database, table)``
     ``database`` is the name of the database (string)

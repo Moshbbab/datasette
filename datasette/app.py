@@ -308,12 +308,6 @@ DEFAULT_NOT_SET = object()
 
 ResourcesSQL = collections.namedtuple("ResourcesSQL", ("sql", "params"))
 
-# Tracks recursive view-table inheritance checks and fails closed if a
-# malicious or malformed schema declares a cycle of FTS content tables.
-_derived_permission_stack = contextvars.ContextVar(
-    "derived_permission_stack", default=()
-)
-
 
 def _permission_cache_key(actor, action, parent, child):
     # Key on the full serialized actor so actors differing in any field
@@ -1762,6 +1756,26 @@ class Datasette:
             )
         return ResourcesSQL(sql, params)
 
+    async def _allowed_derived_table_source(
+        self, database, source, *, actor, dependencies
+    ):
+        """Check an immediate source, denying sources that are themselves derived."""
+        if any(
+            TableResource.normalize_child(table)
+            == TableResource.normalize_child(source)
+            for table in dependencies
+        ):
+            return False
+        # The source has no dependency in this map. Evaluate its own permission
+        # and prerequisites without starting another dependency check.
+        verdicts = await self._allowed_many(
+            actions=["view-table"],
+            resource=TableResource(database, source),
+            actor=actor,
+            check_derived=False,
+        )
+        return verdicts["view-table"]
+
     async def _apply_derived_table_permissions_to_sql(
         self,
         sql,
@@ -1776,12 +1790,17 @@ class Datasette:
             if parent in self.databases
             else ([] if parent is not None else list(self.databases.items()))
         )
-        dependency_maps = await asyncio.gather(
-            *(db.derived_table_dependencies() for _, db in databases)
+        dependency_maps = dict(
+            zip(
+                (name for name, _ in databases),
+                await asyncio.gather(
+                    *(db.derived_table_dependencies() for _, db in databases)
+                ),
+            )
         )
         dependencies = [
             (database_name, child, source)
-            for (database_name, _), dependency_map in zip(databases, dependency_maps)
+            for database_name, dependency_map in dependency_maps.items()
             for child, source in dependency_map.items()
         ]
         if not dependencies:
@@ -1792,10 +1811,11 @@ class Datasette:
         )
         actor_verdicts = await asyncio.gather(
             *(
-                self.allowed(
-                    action="view-table",
-                    resource=TableResource(database_name, source),
+                self._allowed_derived_table_source(
+                    database_name,
+                    source,
                     actor=actor,
+                    dependencies=dependency_maps[database_name],
                 )
                 for database_name, source in sources
             )
@@ -1806,10 +1826,11 @@ class Datasette:
         if include_is_private:
             anonymous_verdicts = await asyncio.gather(
                 *(
-                    self.allowed(
-                        action="view-table",
-                        resource=TableResource(database_name, source),
+                    self._allowed_derived_table_source(
+                        database_name,
+                        source,
                         actor=None,
+                        dependencies=dependency_maps[database_name],
                     )
                     for database_name, source in sources
                 )
@@ -2066,6 +2087,12 @@ ORDER BY allowed.parent, allowed.child
             )
             # {"edit-schema": True, "drop-table": True, "insert-row": False}
         """
+        return await self._allowed_many(
+            actions=actions, resource=resource, actor=actor, check_derived=True
+        )
+
+    async def _allowed_many(self, *, actions, resource, actor, check_derived):
+        """Evaluate permissions, optionally applying the one-hop source policy."""
         from datasette.permissions import (
             _permission_check_cache,
             _skip_permission_checks,
@@ -2119,40 +2146,27 @@ ORDER BY allowed.parent, allowed.child
                 child=child,
             )
 
-        # Automatically derived implementation tables cannot be more visible
-        # than the logical/content table they expose. Keep the requested
-        # table's own permission too: either side can make access private.
         if (
-            "view-table" in to_check
+            check_derived
+            and "view-table" in to_check
             and raw.get("view-table")
             and isinstance(resource, TableResource)
             and parent in self.databases
         ):
-            dependency = await self.databases[parent].derived_table_dependencies()
-            dependency = next(
+            dependencies = await self.databases[parent].derived_table_dependencies()
+            source = next(
                 (
                     source
-                    for table, source in dependency.items()
+                    for table, source in dependencies.items()
                     if TableResource.normalize_child(table)
                     == TableResource.normalize_child(child)
                 ),
                 None,
             )
-            if dependency is not None:
-                stack = _derived_permission_stack.get()
-                dependency_key = (parent, dependency)
-                if dependency_key in stack or dependency == child:
-                    raw["view-table"] = False
-                else:
-                    token = _derived_permission_stack.set(stack + ((parent, child),))
-                    try:
-                        raw["view-table"] = await self.allowed(
-                            action="view-table",
-                            resource=TableResource(parent, dependency),
-                            actor=actor,
-                        )
-                    finally:
-                        _derived_permission_stack.reset(token)
+            if source is not None:
+                raw["view-table"] = await self._allowed_derived_table_source(
+                    parent, source, actor=actor, dependencies=dependencies
+                )
 
         def resolve(name):
             # final verdict = own rules AND verdict of also_requires chain

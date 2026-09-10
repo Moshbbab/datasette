@@ -20,7 +20,11 @@ from datasette.database import (
     _deliver_write_result,
 )
 from datasette.utils import Column
-from datasette.utils.sqlite import sqlite3, supports_returning
+from datasette.utils.sqlite import (
+    sqlite3,
+    sqlite_derived_table_dependencies,
+    supports_returning,
+)
 
 requires_sqlite_returning = pytest.mark.skipif(
     not supports_returning(), reason="SQLite does not support RETURNING"
@@ -37,6 +41,31 @@ async def test_execute(db):
     results = await db.execute("select * from facetable")
     assert isinstance(results, Results)
     assert 15 == len(results)
+
+
+@pytest.mark.asyncio
+async def test_derived_dependency_cache_survives_failed_refresh(monkeypatch):
+    ds = Datasette(memory=True)
+    db = ds.add_memory_database(uuid.uuid4().hex, name="data")
+    await db.derived_table_dependencies()
+    previous_cache = db._cached_derived_table_dependencies
+    await db.execute_write("create table dependency_cache_refresh (id integer)")
+
+    class UnavailableSchema:
+        def execute(self, sql):
+            raise sqlite3.DatabaseError("schema temporarily unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "datasette.database.sqlite_derived_table_dependencies",
+            lambda conn: sqlite_derived_table_dependencies(UnavailableSchema()),
+        )
+        with pytest.raises(sqlite3.DatabaseError, match="schema temporarily"):
+            await db.derived_table_dependencies()
+    assert db._cached_derived_table_dependencies == previous_cache
+
+    await db.derived_table_dependencies()
+    assert db._cached_derived_table_dependencies[0] != previous_cache[0]
 
 
 @pytest.mark.asyncio

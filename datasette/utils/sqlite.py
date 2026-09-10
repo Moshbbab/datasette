@@ -170,14 +170,14 @@ def sqlite_derived_table_dependencies(
     does not report which virtual table owns a shadow table or which table is
     named by an FTS ``content=`` option. Derive those relationships from
     ``sqlite_master`` DDL and the documented shadow-table suffixes.
+
+    Database errors propagate: failed discovery must not be mistaken for an
+    empty dependency map and cached as permission to skip inheritance.
     """
     schema_table = _sqlite_schema_table(schema)
-    try:
-        rows = conn.execute(
-            f"select name, sql from {schema_table} where type = 'table'"
-        ).fetchall()
-    except sqlite3.DatabaseError:
-        return {}
+    rows = conn.execute(
+        f"select name, sql from {schema_table} where type = 'table'"
+    ).fetchall()
 
     table_names = {row[0] for row in rows}
     # SQLite identifiers fold ASCII letters only.
@@ -212,7 +212,7 @@ def sqlite_derived_table_dependencies(
                 if source
                 else None
             )
-            # An unresolved source uses the existing cycle guard to deny access.
+            # An unresolved source is itself derived, so the one-hop policy denies it.
             dependencies[virtual_table] = source or virtual_table
 
     return dependencies

@@ -102,14 +102,11 @@ async def test_database_page(ds_client):
         "tags",
     }
 
-    # Expected hidden tables
+    # The external-content index is visible, but its shadow tables need a
+    # second dependency hop and are excluded by the one-hop permission policy.
     expected_hidden_tables = {
         "no_primary_key",
         "searchable_fts",
-        "searchable_fts_config",
-        "searchable_fts_data",
-        "searchable_fts_docsize",
-        "searchable_fts_idx",
     }
 
     # Verify all expected tables exist
